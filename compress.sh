@@ -1,10 +1,11 @@
 #!/bin/bash
+#注意：推断带有平铺的高分辨率图像时建议进行颜色修正（如 DIV2K、CLIC 2020）。
 
-python src/compress.py \
-    --sd_path="<PATH_TO_SD_TURBO>/sd-turbo" \
-    --elic_path="<PATH_TO_ELIC>/elic_official.pth" \
-    --img_path="<PATH_TO_DATASET>/" \
-    --rec_path="<PATH_TO_SAVE_OUTPUTS>/rec/" \
-    --bin_path="<PATH_TO_SAVE_OUTPUTS>/bin/" \
-    --codec_path="<PATH_TO_STABLECODEC>/stablecodec_ft2.pkl" \
-    # --color_fix
+CUDA_VISIBLE_DEVICES=1 python src/compress.py \
+    --sd_path="stabilityai/sd-turbo" \
+    --elic_path="weight/elic_official.pth" \
+    --img_path="data/test/div2k/" \
+    --rec_path="output/ft32/div2k/rec/" \
+    --bin_path="output/ft32/div2k/bin/" \
+    --codec_path="weight/stablecodec_ft32.pkl" \
+    --color_fix 

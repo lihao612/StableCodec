@@ -1,5 +1,5 @@
 #!/bin/bash
 
 python src/evaluate.py \
-    --recon_dir "<PATH_TO_SAVE_OUTPUTS>/rec/" \
-    --gt_dir "<PATH_TO_DATASET>/"
+    --recon_dir "output/ft32/div2k/rec/" \
+    --gt_dir "data/test/div2k/"
