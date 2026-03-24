@@ -58,7 +58,7 @@ def main(args):
     )
     test_dataset = ImageFolder(
         args.test_dataset,
-        split="Kodak",
+        split="",
         transform=transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
@@ -83,9 +83,14 @@ def main(args):
     net = StableCodec(sd_path=sd_path, args=args)
     net.set_train()
 
+    val_log_path = os.path.join(args.output_dir, "eval", "val_metrics.txt")
+
     if accelerator.is_main_process:
         os.makedirs(os.path.join(args.output_dir, "checkpoints"), exist_ok=True)
         os.makedirs(os.path.join(args.output_dir, "eval"), exist_ok=True)
+        if not os.path.exists(val_log_path):
+            with open(val_log_path, "w") as f:
+                f.write("# format: Steps=...,val/lpips=...,val/psnr=...,val/rate=...,val/y=...,val/z=...\n")
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
             net.unet.enable_xformers_memory_efficient_attention()
@@ -136,6 +141,10 @@ def main(args):
     global_step = 0
     while global_step < args.max_train_steps:
         for batch in train_dataloader:
+            #修改学习率
+            # if global_step == 120000:
+            #     for param_group in optimizer.param_groups:
+            #         param_group['lr'] = 5e-5
             l_acc = [net]
 
             with accelerator.accumulate(*l_acc):
@@ -212,6 +221,13 @@ def main(args):
                         logs["val/psnr"] = np.mean(l_psnr)
                         logs["val/lpips"] = np.mean(l_lpips)
                         progress_bar.set_postfix(**logs)
+                        with open(val_log_path, "a") as f:
+                            f.write(
+                                f"Steps={global_step},"
+                                f"val/lpips={float(logs['val/lpips']):.3f},"
+                                f"val/psnr={float(logs['val/psnr']):.1f},"
+                                f"val/rate={float(logs['val/rate']):.4f},\n"
+                            )
                         gc.collect()
                         torch.cuda.empty_cache()
                         accelerator.log(logs, step=global_step)

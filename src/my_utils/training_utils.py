@@ -57,7 +57,7 @@ def parse_args_training(input_args=None):
     parser.add_argument("--mixed_precision", type=str, default=None, choices=["no", "fp16", "bf16"],)
     parser.add_argument("--enable_xformers_memory_efficient_attention", default=True, help="Whether or not to use xformers.")
     parser.add_argument("--set_grads_to_none", action="store_true")
-    parser.add_argument("--eval_freq", default=100, type=int)
+    parser.add_argument("--eval_freq", default=1000, type=int)
     parser.add_argument("--save_val", default=True)
     parser.add_argument("--save_num", type=int, default=10, help="Number of visual samples to save")
 
