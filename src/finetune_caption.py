@@ -16,9 +16,11 @@ from torchmetrics.image import LearnedPerceptualImagePatchSimilarity
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 from diffusers.utils.import_utils import is_xformers_available
+from diffusers.optimization import get_scheduler
 
 from my_utils.training_utils_caption import parse_args_training, H5CaptionDataset, CaptionImageDataset, CLIPLoss
 from StableCodec_caption import StableCodec
+import vision_aided_loss
 
 
 def main(args):
@@ -92,9 +94,11 @@ def main(args):
     if accelerator.is_main_process:
         os.makedirs(os.path.join(args.output_dir, "checkpoints"), exist_ok=True)
         os.makedirs(os.path.join(args.output_dir, "eval"), exist_ok=True)
+
         if not os.path.exists(val_log_path):
             with open(val_log_path, "w") as f:
                 f.write("# format: Steps=...,val/lpips=...,val/psnr=...,val/rate=...,val/y=...,val/z=...\n")
+
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
             net.unet.enable_xformers_memory_efficient_attention()
@@ -105,10 +109,17 @@ def main(args):
     if args.allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
 
+    net_disc = vision_aided_loss.Discriminator(cv_type='dinov2_reg', output_type='conv_multi_level', loss_type=args.gan_loss_type, device="cuda")
+    net_disc = net_disc.cuda()
+    net_disc.requires_grad_(True)
+    net_disc.cv_ensemble.requires_grad_(False)
+    net_disc.train()
+
     net_lpips = lpips.LPIPS(net='vgg').cuda()
     net_lpips.requires_grad_(False)
     alex_lpips = LearnedPerceptualImagePatchSimilarity(normalize=True).cuda()
     alex_lpips.requires_grad_(False)
+    # net_clip = CLIPLoss(clip_model_name='/your_local_dir/clip-vit-base-patch32').cuda()
     net_clip = CLIPLoss().cuda()
 
     layers_to_opt = list(net.codec.parameters())
@@ -121,9 +132,14 @@ def main(args):
         if "lora" in n:
             assert _p.requires_grad
             layers_to_opt.append(_p)
-    optimizer = torch.optim.AdamW(layers_to_opt, lr=1e-4, betas=(args.adam_beta1, args.adam_beta2), weight_decay=args.adam_weight_decay, eps=args.adam_epsilon)
+    optimizer = torch.optim.AdamW(layers_to_opt, lr=5e-5, betas=(args.adam_beta1, args.adam_beta2), weight_decay=args.adam_weight_decay, eps=args.adam_epsilon)
+    optimizer_disc = torch.optim.AdamW(net_disc.parameters(), lr=2e-5, betas=(args.adam_beta1, args.adam_beta2), weight_decay=args.adam_weight_decay, eps=args.adam_epsilon,)
+    lr_scheduler_disc = get_scheduler(args.lr_scheduler, optimizer=optimizer_disc,
+            num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
+            num_training_steps=args.max_train_steps * accelerator.num_processes)
 
-    net, optimizer, train_dataloader, net_lpips, alex_lpips, net_clip = accelerator.prepare(net, optimizer, train_dataloader, net_lpips, alex_lpips, net_clip)
+    net, net_disc, optimizer, optimizer_disc, train_dataloader, lr_scheduler_disc = accelerator.prepare(net, net_disc, optimizer, optimizer_disc, train_dataloader, lr_scheduler_disc)
+    net_lpips, alex_lpips, net_clip = accelerator.prepare(net_lpips, alex_lpips, net_clip)
 
     if accelerator.is_main_process:
         main_device = accelerator.device
@@ -138,6 +154,11 @@ def main(args):
     alex_lpips.to(accelerator.device, dtype=weight_dtype)
     net_clip.to(accelerator.device, dtype=weight_dtype)
 
+    net_disc.to(accelerator.device, dtype=weight_dtype)
+    for name, module in net_disc.named_modules():
+        if "attn" in name:
+            module.fused_attn = False
+
     progress_bar = tqdm(range(0, args.max_train_steps), initial=0, desc="Steps", disable=not accelerator.is_local_main_process,)
     mse_loss = torch.nn.MSELoss()
 
@@ -145,11 +166,20 @@ def main(args):
     while global_step < args.max_train_steps:
         for batch, prompts in train_dataloader:
             prompts = list(prompts)
-            # print(prompts)
 
-            l_acc = [net]
+            if global_step == 5000:
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = 2e-5
+            if global_step == 10000:
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = 1e-5
+            if global_step == 15000:
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = 1e-6
+            l_acc = [net, net_disc]
 
             with accelerator.accumulate(*l_acc):
+                B, C, H, W = batch.shape
                 x_hat, RateLossOutput = net(batch, prompts, args.train_patch_size, args.train_patch_size)
                 x = batch.detach().float()
                 x_hat = x_hat.float()
@@ -157,7 +187,8 @@ def main(args):
                 loss_l2 = mse_loss(x_hat, x)
                 loss_lpips = net_lpips(x_hat, x).mean()
                 loss_clip = net_clip(x_hat, x)
-                loss_D = loss_l2 * args.lambda_l2 + loss_lpips * args.lambda_lpips + loss_clip * args.lambda_clip
+                loss_adv = net_disc(x_hat, for_G=True).mean()
+                loss_D = loss_l2 * args.lambda_l2 + loss_lpips * args.lambda_lpips + loss_clip * args.lambda_clip + loss_adv * args.lambda_gan
                 loss = RateLossOutput.rate_loss + loss_D
 
                 accelerator.backward(loss)
@@ -166,6 +197,22 @@ def main(args):
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=args.set_grads_to_none)
 
+                loss_real = net_disc(x.detach(), for_real=True).mean() * args.lambda_gan
+                accelerator.backward(loss_real)
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(net_disc.parameters(), args.max_grad_norm)
+                optimizer_disc.step()
+                lr_scheduler_disc.step()
+                optimizer_disc.zero_grad(set_to_none=args.set_grads_to_none)
+
+                loss_fake = net_disc(x_hat.detach(), for_real=False).mean() * args.lambda_gan
+                accelerator.backward(loss_fake)
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(net_disc.parameters(), args.max_grad_norm)
+                optimizer_disc.step()
+                lr_scheduler_disc.step()
+                optimizer_disc.zero_grad(set_to_none=args.set_grads_to_none)
+
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 global_step += 1
@@ -173,7 +220,7 @@ def main(args):
                 if accelerator.is_main_process:
 
                     if global_step % args.checkpointing_steps == 1:
-                        outf = os.path.join(args.output_dir, "checkpoints", f"stablecodec_base_{global_step}.pkl")
+                        outf = os.path.join(args.output_dir, "checkpoints", f"stablecodec_ft{int(args.lambda_rate)}_{global_step}.pkl")
                         accelerator.unwrap_model(net).save_model(outf)
 
                     if global_step % args.eval_freq == 1:
@@ -183,7 +230,6 @@ def main(args):
                             batch_val, val_prompts = batch_val
                             batch_val = batch_val.to(main_device)
                             val_prompts = list(val_prompts)
-                            # print(val_prompts)
 
                             B, C, H, W = batch_val.shape
                             assert B == 1, "Use batch size 1 for eval."
@@ -224,6 +270,7 @@ def main(args):
                         logs["val/psnr"] = np.mean(l_psnr)
                         logs["val/lpips"] = np.mean(l_lpips)
                         progress_bar.set_postfix(**logs)
+
                         with open(val_log_path, "a") as f:
                             f.write(
                                 f"Steps={global_step},"
@@ -231,10 +278,10 @@ def main(args):
                                 f"val/psnr={float(logs['val/psnr']):.1f},"
                                 f"val/rate={float(logs['val/rate']):.4f},\n"
                             )
+
                         gc.collect()
                         torch.cuda.empty_cache()
                         accelerator.log(logs, step=global_step)
-
 
 
 if __name__ == "__main__":

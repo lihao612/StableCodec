@@ -123,9 +123,6 @@ class StableCodec(torch.nn.Module):
         if not all(isinstance(prompt, str) for prompt in pos_prompt):
             raise TypeError("Every prompt in pos_prompt must be a string")
 
-        if len(pos_prompt) == 1 and batch_size > 1:
-            return [pos_prompt[0] for _ in range(batch_size)]
-
         if len(pos_prompt) != batch_size:
             raise ValueError(f"Expected {batch_size} prompts, but received {len(pos_prompt)}")
 
@@ -210,89 +207,90 @@ class StableCodec(torch.nn.Module):
         # Latent Codec - Entropy Decoding
         lq_latent_hat, res = self.codec.decompress(strings, shape)
 
-        # #分块扩散
+        #分块扩散
         # pos_caption_enc = [self.pos_caption_enc for _ in range(lq_latent_hat.shape[0])]
         # pos_caption_enc = torch.cat(pos_caption_enc, dim=0).to(lq_latent_hat.device)
-
-        # # One-Step Denoiser with tile function
-        # _, _, h, w = lq_latent_hat.size()
-        # tile_size, tile_overlap = (self.latent_tiled_size, self.latent_tiled_overlap)
-        # if h * w <= tile_size * tile_size:
-        #     model_pred = self.unet(lq_latent_hat, self.timesteps, encoder_hidden_states=pos_caption_enc).sample
-        # else:
-        #     print(f"[Tiled Latent]: the input latent is {h}x{w}, need to tiled")
-        #     tile_size = min(tile_size, min(h, w))
-        #     tile_weights = self._gaussian_weights(tile_size, tile_size, 1).to(lq_latent_hat.device)
-
-        #     grid_rows = 0
-        #     cur_x = 0
-        #     while cur_x < lq_latent_hat.size(-1):
-        #         cur_x = max(grid_rows * tile_size-tile_overlap * grid_rows, 0)+tile_size
-        #         grid_rows += 1
-
-        #     grid_cols = 0
-        #     cur_y = 0
-        #     while cur_y < lq_latent_hat.size(-2):
-        #         cur_y = max(grid_cols * tile_size-tile_overlap * grid_cols, 0)+tile_size
-        #         grid_cols += 1
-
-        #     input_list = []
-        #     noise_preds = []
-        #     for row in range(grid_rows):
-        #         for col in range(grid_cols):
-        #             if col < grid_cols-1 or row < grid_rows-1:
-        #                 ofs_x = max(row * tile_size-tile_overlap * row, 0)
-        #                 ofs_y = max(col * tile_size-tile_overlap * col, 0)
-        #             if row == grid_rows-1:
-        #                 ofs_x = w - tile_size
-        #             if col == grid_cols-1:
-        #                 ofs_y = h - tile_size
-
-        #             input_start_x = ofs_x
-        #             input_end_x = ofs_x + tile_size
-        #             input_start_y = ofs_y
-        #             input_end_y = ofs_y + tile_size
-
-        #             input_tile = lq_latent_hat[:, :, input_start_y:input_end_y, input_start_x:input_end_x]
-        #             input_list.append(input_tile)
-
-        #             if len(input_list) == 1 or col == grid_cols-1:
-        #                 input_list_t = torch.cat(input_list, dim=0)
-        #                 model_pred = self.unet(input_list_t, self.timesteps, encoder_hidden_states=pos_caption_enc).sample
-        #                 input_list = []
-        #             noise_preds.append(model_pred)
-
-        #     noise_pred = torch.zeros(lq_latent_hat[:, :4].shape, device=lq_latent_hat.device)
-        #     contributors = torch.zeros(lq_latent_hat[:, :4].shape, device=lq_latent_hat.device)
-        #     for row in range(grid_rows):
-        #         for col in range(grid_cols):
-        #             if col < grid_cols-1 or row < grid_rows-1:
-        #                 ofs_x = max(row * tile_size-tile_overlap * row, 0)
-        #                 ofs_y = max(col * tile_size-tile_overlap * col, 0)
-        #             if row == grid_rows-1:
-        #                 ofs_x = w - tile_size
-        #             if col == grid_cols-1:
-        #                 ofs_y = h - tile_size
-
-        #             input_start_x = ofs_x
-        #             input_end_x = ofs_x + tile_size
-        #             input_start_y = ofs_y
-        #             input_end_y = ofs_y + tile_size
-
-        #             noise_pred[:, :, input_start_y:input_end_y, input_start_x:input_end_x] += noise_preds[row*grid_cols + col] * tile_weights
-        #             contributors[:, :, input_start_y:input_end_y, input_start_x:input_end_x] += tile_weights
-        #     noise_pred /= contributors
-        #     model_pred = noise_pred
-
-        # x_denoised = self.sched.step(model_pred, self.timesteps, lq_latent_hat[:, :4], return_dict=True).prev_sample+ res
-
-        #整图扩散
         pos_caption_enc = self._get_prompt_embeddings(pos_prompt, lq_latent_hat.shape[0], lq_latent_hat.device)
 
-        # One-Step Denoiser on the full latent so each image uses its whole-image caption directly.
-        model_pred = self.unet(lq_latent_hat, self.timesteps, encoder_hidden_states=pos_caption_enc).sample
+        # One-Step Denoiser with tile function
+        _, _, h, w = lq_latent_hat.size()
+        tile_size, tile_overlap = (self.latent_tiled_size, self.latent_tiled_overlap)
+        if h * w <= tile_size * tile_size:
+            model_pred = self.unet(lq_latent_hat, self.timesteps, encoder_hidden_states=pos_caption_enc).sample
+        else:
+            print(f"[Tiled Latent]: the input latent is {h}x{w}, need to tiled")
+            tile_size = min(tile_size, min(h, w))
+            tile_weights = self._gaussian_weights(tile_size, tile_size, 1).to(lq_latent_hat.device)
+
+            grid_rows = 0
+            cur_x = 0
+            while cur_x < lq_latent_hat.size(-1):
+                cur_x = max(grid_rows * tile_size-tile_overlap * grid_rows, 0)+tile_size
+                grid_rows += 1
+
+            grid_cols = 0
+            cur_y = 0
+            while cur_y < lq_latent_hat.size(-2):
+                cur_y = max(grid_cols * tile_size-tile_overlap * grid_cols, 0)+tile_size
+                grid_cols += 1
+
+            input_list = []
+            noise_preds = []
+            for row in range(grid_rows):
+                for col in range(grid_cols):
+                    if col < grid_cols-1 or row < grid_rows-1:
+                        ofs_x = max(row * tile_size-tile_overlap * row, 0)
+                        ofs_y = max(col * tile_size-tile_overlap * col, 0)
+                    if row == grid_rows-1:
+                        ofs_x = w - tile_size
+                    if col == grid_cols-1:
+                        ofs_y = h - tile_size
+
+                    input_start_x = ofs_x
+                    input_end_x = ofs_x + tile_size
+                    input_start_y = ofs_y
+                    input_end_y = ofs_y + tile_size
+
+                    input_tile = lq_latent_hat[:, :, input_start_y:input_end_y, input_start_x:input_end_x]
+                    input_list.append(input_tile)
+
+                    if len(input_list) == 1 or col == grid_cols-1:
+                        input_list_t = torch.cat(input_list, dim=0)
+                        model_pred = self.unet(input_list_t, self.timesteps, encoder_hidden_states=pos_caption_enc).sample
+                        input_list = []
+                    noise_preds.append(model_pred)
+
+            noise_pred = torch.zeros(lq_latent_hat[:, :4].shape, device=lq_latent_hat.device)
+            contributors = torch.zeros(lq_latent_hat[:, :4].shape, device=lq_latent_hat.device)
+            for row in range(grid_rows):
+                for col in range(grid_cols):
+                    if col < grid_cols-1 or row < grid_rows-1:
+                        ofs_x = max(row * tile_size-tile_overlap * row, 0)
+                        ofs_y = max(col * tile_size-tile_overlap * col, 0)
+                    if row == grid_rows-1:
+                        ofs_x = w - tile_size
+                    if col == grid_cols-1:
+                        ofs_y = h - tile_size
+
+                    input_start_x = ofs_x
+                    input_end_x = ofs_x + tile_size
+                    input_start_y = ofs_y
+                    input_end_y = ofs_y + tile_size
+
+                    noise_pred[:, :, input_start_y:input_end_y, input_start_x:input_end_x] += noise_preds[row*grid_cols + col] * tile_weights
+                    contributors[:, :, input_start_y:input_end_y, input_start_x:input_end_x] += tile_weights
+            noise_pred /= contributors
+            model_pred = noise_pred
 
         x_denoised = self.sched.step(model_pred, self.timesteps, lq_latent_hat[:, :4], return_dict=True).prev_sample + res
+
+        # #整图扩散
+        # pos_caption_enc = self._get_prompt_embeddings(pos_prompt, lq_latent_hat.shape[0], lq_latent_hat.device)
+
+        # # One-Step Denoiser on the full latent so each image uses its whole-image caption directly.
+        # model_pred = self.unet(lq_latent_hat, self.timesteps, encoder_hidden_states=pos_caption_enc).sample
+
+        # x_denoised = self.sched.step(model_pred, self.timesteps, lq_latent_hat[:, :4], return_dict=True).prev_sample + res
 
 
         # Decoder
