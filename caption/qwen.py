@@ -12,7 +12,7 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 10
 MAX_WORKERS = int(os.getenv("QWEN_MAX_WORKERS", "5"))
 REQUEST_INTERVAL = float(os.getenv("QWEN_REQUEST_INTERVAL", "10"))
-COMPRESS_QUALITY = int(os.getenv("QWEN_COMPRESS_QUALITY", "95"))
+COMPRESS_QUALITY = int(os.getenv("QWEN_COMPRESS_QUALITY", "80"))
 
 _thread_local = threading.local()
 
@@ -76,8 +76,8 @@ def should_regenerate(existing_result):
         return True
     if not normalized.endswith("."):
         return True
-    if contains_chinese(normalized):
-        return True
+    # if contains_chinese(normalized):
+    #     return True
 
     return False
 
@@ -145,8 +145,8 @@ def process_image(image_dir, filename, use_compressed_image=False):
     return filename, result, completion_tokens
 
 
-image_dir = "data/test/div2k"   # 你的PNG文件夹
-output_file = "data/test/div2k_caption.json"  # 输出结果的JSON文件
+image_dir = "data/test_ori/clic2020"   # 你的PNG文件夹
+output_file = "data/test_ori/clic2020_caption.json"  # 输出结果的JSON文件
 
 # 断点续传：优先加载已有结果
 results = {}
