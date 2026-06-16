@@ -1108,3 +1108,5 @@ Steps=110700,val/lpips=0.182,val/psnr=23,val/rate=0.0482
 Steps=110800,val/lpips=0.182,val/psnr=23.3,val/rate=0.0482
 Steps=110900,val/lpips=0.18,val/psnr=23.1,val/rate=0.0481
 Steps=111000,val/lpips=0.181,val/psnr=23.2,val/rate=0.0482
+
+0.0496

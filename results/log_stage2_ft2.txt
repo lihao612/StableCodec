@@ -200,3 +200,5 @@ Steps=19900,val/lpips=0.170,val/psnr=22.8,val/rate=0.0333
 Steps=20000,val/lpips=0.168,val/psnr=22.8,val/rate=0.0332
 Steps=20100,val/lpips=0.170,val/psnr=22.8,val/rate=0.0332
 Steps=20200,val/lpips=0.169,val/psnr=22.8,val/rate=0.0332
+
+0.0334
